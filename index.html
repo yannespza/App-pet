@@ -114,6 +114,7 @@ label.f small{color:var(--muted);font-size:12.5px}
 .danger-link{color:var(--danger);font-weight:800;font-size:14px;display:block;margin:14px auto 0}
 
 /* clínicas */
+.gcal{display:inline-block;margin-top:8px;padding:6px 12px;border-radius:10px;font-weight:800;font-size:13px;text-decoration:none;background:var(--accent-soft);color:var(--accent)}
 .clin .nm{font-weight:800}
 .clin .acts{display:flex;gap:8px;margin-top:8px}
 .clin .acts a{flex:1;text-align:center;padding:8px;border-radius:10px;font-weight:800;font-size:14px;text-decoration:none;background:var(--accent-soft);color:var(--accent)}
@@ -184,13 +185,33 @@ function idade(nasc){
   const a = Math.floor(meses/12), r = meses%12;
   return a + (a===1?' ano':' anos') + (r ? ` e ${r} ${r===1?'mês':'meses'}` : '');
 }
+// Link que abre o Google Agenda com o evento já preenchido (dia inteiro).
+function gcalLink(r, q){
+  const p = pet(); const d = parseD(q); const d2 = new Date(d); d2.setDate(d2.getDate() + 1);
+  const f = x => x.getFullYear() + String(x.getMonth()+1).padStart(2,'0') + String(x.getDate()).padStart(2,'0');
+  const oQue = {vacina:'Vacina', remedio:'Remédio', consulta:'Consulta', banho:'Banho', nota:'Lembrete'}[r.tipo];
+  const titulo = `🐾 ${p.nome}: ${oQue === r.titulo ? oQue : oQue + ' – ' + r.titulo}`;
+  const det = [r.dose, r.freq, r.obs, 'Criado pela Caderneta do Pet'].filter(Boolean).join('\n');
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+    + '&text=' + encodeURIComponent(titulo) + '&dates=' + f(d) + '/' + f(d2)
+    + '&details=' + encodeURIComponent(det) + (r.local ? '&location=' + encodeURIComponent(r.local) : '');
+}
+const gcalBtn = (r, q) => `<a class="gcal" href="${gcalLink(r, q)}" target="_blank" rel="noopener">📅 Google Agenda</a>`;
+
+// Data "por vir" de um registro: a própria data, se foi marcada para o futuro; senão o campo "próxima".
+function quando(r){
+  if(r.data && diasAte(r.data) >= 0) return r.data;
+  if(r.proxima) return r.proxima;
+  return null;
+}
 function prazoTag(s, rotulo='Próxima'){
   if(!s) return '';
   const d = diasAte(s);
   if(d < 0) return `<span class="tag late">${rotulo} atrasada há ${-d} ${-d===1?'dia':'dias'}</span>`;
   if(d === 0) return `<span class="tag warn">${rotulo}: hoje</span>`;
-  if(d <= 15) return `<span class="tag warn">${rotulo} em ${d} ${d===1?'dia':'dias'} · ${fmt(s)}</span>`;
-  return `<span class="tag ok">${rotulo}: ${fmt(s)}</span>`;
+  if(d === 1) return `<span class="tag warn">${rotulo}: amanhã · ${fmt(s)}</span>`;
+  if(d <= 15) return `<span class="tag warn">${rotulo} em ${d} dias · ${fmt(s)}</span>`;
+  return `<span class="tag ok">${rotulo}: ${fmt(s)} · em ${d} dias</span>`;
 }
 
 /* ---------- tipos de registro ---------- */
@@ -285,7 +306,8 @@ function itemHTML(r, opts={}){
   if(r.valor) linhas.push(`R$ ${Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})}`);
   if(r.obs) linhas.push(r.obs);
   let tag = '';
-  if(r.tipo === 'remedio'){
+  if(r.tipo !== 'remedio' && r.data && diasAte(r.data) > 0) tag = prazoTag(r.data, 'Agendado');
+  else if(r.tipo === 'remedio'){
     if(r.proxima) tag = prazoTag(r.proxima);
     else if(r.fim && diasAte(r.fim) < 0) tag = `<span class="tag ok">Concluído em ${fmt(r.fim)}</span>`;
     else tag = `<span class="tag warn">Em uso${r.fim ? ' até ' + fmt(r.fim) : ' (contínuo)'}</span>`;
@@ -297,6 +319,7 @@ function itemHTML(r, opts={}){
       <div class="d">${opts.showTipo ? T.nome + ' · ' : ''}${fmt(r.data)}${r.tipo==='remedio' && r.data ? ' (início)' : ''}</div>
       ${linhas.length ? `<div class="x">${esc(linhas.join('\n'))}</div>` : ''}
       ${opts.noTag ? '' : tag}
+      ${!opts.noTag && quando(r) && diasAte(quando(r)) >= 0 ? `<div>${gcalBtn(r, quando(r))}</div>` : ''}
     </div>
     <button class="edit" onclick="formReg('${r.tipo}','${r.id}')">Editar</button>
   </div>`;
@@ -307,14 +330,17 @@ function inicio(){
   const foto = p.foto ? `<img src="${p.foto}" alt="Foto de ${esc(p.nome)}">` : PAW;
   const det = [p.especie, p.raca].filter(Boolean).join(' · ');
   // próximos compromissos
-  const prox = (p.registros||[]).filter(r => r.proxima && diasAte(r.proxima) <= 30)
-    .sort((a,b) => a.proxima.localeCompare(b.proxima));
+  const prox = (p.registros||[]).map(r => ({r, q: quando(r)})).filter(x => x.q)
+    .sort((a,b) => a.q.localeCompare(b.q)).slice(0, 10);
   const emUso = (p.registros||[]).filter(r => r.tipo==='remedio' && !r.proxima && (!r.fim || diasAte(r.fim) >= 0));
-  const proxHTML = prox.length ? prox.map(r => {
-      const rot = {vacina:'Vacina', remedio:'Remédio', consulta:'Retorno', banho:'Banho', nota:'Lembrete'}[r.tipo];
+  const proxHTML = prox.length ? prox.map(({r, q}) => {
+      const futuro = r.data && diasAte(r.data) >= 0;
+      const rot = futuro ? {vacina:'Vacina agendada', remedio:'Remédio (início)', consulta:'Consulta agendada', banho:'Banho agendado', nota:'Lembrete'}[r.tipo]
+                         : {vacina:'Reforço da vacina', remedio:'Próxima dose', consulta:'Retorno', banho:'Próximo banho', nota:'Lembrete'}[r.tipo];
       return `<div class="item"><div class="ico ${r.tipo}">${TIPOS[r.tipo].e}</div><div class="body">
-        <div class="t">${esc(r.titulo)}</div><div class="d">${rot}</div>${prazoTag(r.proxima, 'Data')}</div></div>`;
-    }).join('') : `<div class="empty">Nada marcado para os próximos 30 dias 🎉</div>`;
+        <div class="t">${esc(r.titulo)}</div><div class="d">${rot}</div>${prazoTag(q, 'Data')}${diasAte(q) >= 0 ? `<div>${gcalBtn(r, q)}</div>` : ''}</div>
+        <button class="edit" onclick="formReg('${r.tipo}','${r.id}')">Editar</button></div>`;
+    }).join('') : `<div class="empty">Nenhum compromisso marcado 🎉</div>`;
   const usoHTML = emUso.length ? `<div class="section-h"><h2>Remédios em uso</h2></div>
     <div class="card">${emUso.map(r => itemHTML(r)).join('')}</div>` : '';
   const ultimos = regs().slice(0,3);
@@ -329,7 +355,7 @@ function inicio(){
     </div>
   </div>
 
-  <div class="section-h"><h2>Próximos 30 dias</h2></div>
+  <div class="section-h"><h2>Próximos compromissos</h2></div>
   <div class="card">${proxHTML}</div>
   ${usoHTML}
 
@@ -368,12 +394,15 @@ function saude(){
 
 function banhoV(){
   const lista = regs('banho');
-  const ult = lista[0];
+  const ult = lista.find(r => diasAte(r.data) <= 0);
   const dias = ult ? -diasAte(ult.data) : null;
+  const prox = lista.map(r => quando(r)).filter(q => q && diasAte(q) >= 0).sort()[0];
   const resumo = ult ? `<div class="card"><div class="d" style="color:var(--muted);font-size:14px">Último banho/tosa</div>
      <div style="font-family:Fredoka;font-size:22px;font-weight:600">${dias===0?'Hoje':dias===1?'Ontem':`Há ${dias} dias`}</div>
      <div style="color:var(--muted);font-size:14px">${esc(ult.titulo)} em ${fmt(ult.data)}</div></div>` : '';
-  return `<h2 style="margin:0 4px 12px">Banho e tosa</h2>${resumo}
+  const proxResumo = prox ? `<div class="card"><div class="d" style="color:var(--muted);font-size:14px">Próximo agendado</div>
+     <div style="font-family:Fredoka;font-size:22px;font-weight:600">${fmt(prox)}</div><div style="color:var(--muted);font-size:14px">${diasAte(prox)===0?'É hoje!':diasAte(prox)===1?'Amanhã':`Faltam ${diasAte(prox)} dias`}</div></div>` : '';
+  return `<h2 style="margin:0 4px 12px">Banho e tosa</h2>${proxResumo}${resumo}
   <button class="btn" onclick="formReg('banho')">+ Registrar banho ou tosa</button>
   <div class="card" style="margin-top:14px">${lista.length ? lista.map(r => itemHTML(r)).join('') :
     `<div class="empty">Nenhum banho registrado ainda.</div>`}</div>`;
@@ -412,7 +441,7 @@ function clinicas(){
           ${c.tel ? `<a class="call" href="tel:${c.tel.replace(/[^\d+]/g,'')}">📞 Ligar</a>` : ''}
         </div>
       </div></div>`).join('')}</div>`
-      : `<div class="card"><div class="empty">Não encontrei clínicas cadastradas no mapa aberto num raio de 15 km. Use o botão do Google Maps acima.</div></div>`;
+      : `<div class="card"><div class="empty">Não encontrei clínicas no mapa aberto perto de você. Use o botão do Google Maps acima, que tem a lista completa.</div></div>`;
   }
   const gmaps = s.lat ? `https://www.google.com/maps/search/veterin%C3%A1rio+24+horas/@${s.lat},${s.lng},14z`
                       : `https://www.google.com/maps/search/veterin%C3%A1rio+24+horas+perto+de+mim`;
@@ -470,25 +499,59 @@ async function buscarPorEndereco(ev){
   }
 }
 
+// Busca com tempo-limite, para nunca ficar "carregando" para sempre.
+async function buscaJSON(url, opts={}, ms=15000){
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try{ const r = await fetch(url, {...opts, signal: ctrl.signal}); if(!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+  finally{ clearTimeout(t); }
+}
+
+// 1ª tentativa: OpenStreetMap (Overpass), em vários servidores ao mesmo tempo; vale o primeiro que responder.
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+async function viaOverpass(lat, lng){
+  const q = `[out:json][timeout:20];(nwr["amenity"="veterinary"](around:15000,${lat},${lng});nwr["healthcare"="veterinary"](around:15000,${lat},${lng}););out center tags;`;
+  const j = await Promise.any(OVERPASS.map(u => buscaJSON(u + '?data=' + encodeURIComponent(q), {}, 18000)));
+  return (j.elements || []).map(e => {
+    const t = e.tags || {}, la = e.lat ?? e.center?.lat, lo = e.lon ?? e.center?.lon, oh = t.opening_hours || '';
+    const end = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(', ') || t['addr:suburb'] || '';
+    return {nome: t.name || 'Clínica veterinária', lat:la, lng:lo, horario: oh,
+      h24: /24\/7|00:00-24:00|24 ?h/i.test(oh + ' ' + (t.name||'')), tel: t.phone || t['contact:phone'] || '', end};
+  });
+}
+// 2ª tentativa: Photon (outro buscador do mesmo mapa).
+async function viaPhoton(lat, lng){
+  const j = await buscaJSON(`https://photon.komoot.io/api/?q=veterin%C3%A1rio&lat=${lat}&lon=${lng}&limit=40&osm_tag=amenity:veterinary`);
+  return (j.features || []).map(f => { const p = f.properties || {};
+    return {nome: p.name || 'Clínica veterinária', lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0],
+      horario:'', h24: /24 ?h|24 horas/i.test(p.name||''), tel:'', end: [p.street, p.housenumber].filter(Boolean).join(', ') || p.district || ''}; });
+}
+// 3ª tentativa: Nominatim, procurando dentro de um quadrado ao redor do ponto.
+async function viaNominatim(lat, lng){
+  const d = 0.15, vb = [lng-d, lat+d, lng+d, lat-d].join(',');
+  const urls = ['veterinário', 'clínica veterinária', 'pet hospital'].map(t =>
+    `https://nominatim.openstreetmap.org/search?format=json&limit=30&bounded=1&countrycodes=br&accept-language=pt-BR&viewbox=${vb}&q=${encodeURIComponent(t)}`);
+  const res = await Promise.allSettled(urls.map(u => buscaJSON(u)));
+  return res.flatMap(r => r.status === 'fulfilled' ? r.value : []).map(x => ({
+    nome: x.name || (x.display_name||'').split(',')[0] || 'Clínica veterinária', lat: Number(x.lat), lng: Number(x.lon),
+    horario:'', h24: /24 ?h|24 horas/i.test(x.display_name||''), tel:'', end: (x.display_name||'').split(',').slice(1,3).join(',').trim()}));
+}
+
 async function buscarPorCoords(lat, lng){
   clinState = {...clinState, lat, lng, status:'loading', msg:'Procurando clínicas por perto…', ajuda:''}; render();
-  const q = `[out:json][timeout:25];(nwr["amenity"="veterinary"](around:15000,${lat},${lng}););out center tags;`;
-  try{
-    const r = await fetch('https://overpass-api.de/api/interpreter', {method:'POST', body:'data=' + encodeURIComponent(q),
-      headers:{'Content-Type':'application/x-www-form-urlencoded'}});
-    if(!r.ok) throw new Error();
-    const j = await r.json();
-    const list = j.elements.map(e => {
-      const t = e.tags || {}, la = e.lat ?? e.center?.lat, lo = e.lon ?? e.center?.lon;
-      const oh = t.opening_hours || '';
-      const end = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(', ') || t['addr:suburb'] || '';
-      return {nome: t.name || 'Clínica veterinária', lat:la, lng:lo, dist: distKm(lat,lng,la,lo),
-        h24: /24\/7|00:00-24:00|24 ?h/i.test(oh), horario: oh, tel: t.phone || t['contact:phone'] || '', end};
-    }).filter(c => c.lat).sort((a,b) => (b.h24 - a.h24) || (a.dist - b.dist)).slice(0, 25);
-    clinState = {...clinState, status:'done', list};
-  }catch(e){
-    clinState = {...clinState, status:'error', msg:'Não consegui buscar a lista agora. O botão do Google Maps continua funcionando.', ajuda:''};
+  let brutos = [];
+  for(const fonte of [viaOverpass, viaPhoton, viaNominatim]){
+    try{ brutos = await fonte(lat, lng); }catch(e){ brutos = []; }
+    if(brutos.length) break;
+    clinState = {...clinState, msg:'Ainda procurando, tentando outro mapa…'}; render();
   }
+  const vistos = new Set();
+  const list = brutos.filter(c => c.lat && c.lng)
+    .map(c => ({...c, dist: distKm(lat, lng, c.lat, c.lng)}))
+    .filter(c => c.dist <= 25)
+    .filter(c => { const k = c.nome.toLowerCase() + '|' + c.lat.toFixed(3) + c.lng.toFixed(3); if(vistos.has(k)) return false; vistos.add(k); return true; })
+    .sort((a,b) => (b.h24 - a.h24) || (a.dist - b.dist)).slice(0, 30);
+  clinState = {...clinState, status:'done', list};
   render();
 }
 
